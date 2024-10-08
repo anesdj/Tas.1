@@ -1,0 +1,656 @@
+###~~PACKAGE~~###
+#~~~~~~~~~~~~~~~#
+
+library(lubridate) #to deal with dates, years, months, days
+library(stringr) # to deal with strings
+library(nlme) # lme() function 
+library(glme) # glme() function
+library(ggplot2)
+library(multcomp)
+library(multcompView)
+library(lsmeans)
+library(rstatix)
+library(tidyverse)
+library(ggpubr)
+library(dplyr)
+library(reshape2)
+#install.packages("wrapr")
+library(wrapr)
+
+
+my_theme <- theme_bw()
+theme_set(my_theme)
+
+
+reformating_year <- function(date_vect){
+  out <- vector()
+  for(i in 1:length(date_vect)){
+    out <- c(out, (paste(str_split(date_vect[i], "-")[[1]][3],
+                                str_split(date_vect[i], "-")[[1]][2],
+                                str_split(date_vect[i], "-")[[1]][1], sep = "-")))
+    }
+  return(out)
+} 
+
+matching_position_code <- function(...){
+  out <- vector()
+  for(i in 1:dim(puer_site_year_pos)[1]){
+    out <- c(out, as.character(position_codes[position_codes$coll_position %in% puer_site_year_pos$coll_position[i], "coll_pos_description"]))
+  }
+  return(out)
+}
+
+spliting_str <- function(...){
+  out <- vector()
+  for(i in 1: dim(puer_site_year_pos)[1]){
+    out <- c(out, str_trim(str_split(puer_site_year_pos$coll_pos_description[i], ",")[[1]][2], "left"))
+  }
+  return(out)
+} 
+
+removing_right_minus_sign <- function(x){
+  ifelse(x %in% c("1-", "2-", "3-", "4-", "5-", "6-", "7-", "8-", "9-", "10-", "11-", "12-"), 
+         str_split(x,"-")[[1]][1], x)
+  }
+  
+
+matching_position_coordinates <- function(...){
+  out <- vector()
+  for(i in 1:dim(puer_site_year_pos)[1]){
+    out <- rbind(out, data.frame(dummy_coord[as.character(dummy_coord$coll_position) %in% puer_site_year_pos$coll_position[i],c("x", "y")] ) )
+  }
+  return(out)
+}
+
+
+
+
+###~~DATA CLEANING~~###
+#~~~~~~~~~~~~~~~~~~~~~#
+puer_data <- read.csv('puerulus_for_Anes_18052021.csv', header =  T, fileEncoding = "UTF-8-BOM" )
+#there are some rows in southarm that should be deleted because use numbercode
+
+#removing colldes with #position1 dst
+#puer_data <- puer_data[!(puer_data$coll_pos_description =="Position #1" |puer_data$coll_pos_description =="Position #2"
+#                         | puer_data$coll_pos_description =="Position #3" ), ]
+#from 12571 row become 12514 rows. but the southarm data can only read 1260 rows from previous one 3881 rows
+
+puer_data$n_puer <- rowSums(puer_data[, c("unstaged", "stage_1", "stage_2", "stage_3", "post") ]) # juveniles not included
+# puer_data$year <- year(reformating_year(puer_data$date)) # create year column
+
+puer_data$coll_position_old <- puer_data$coll_position
+puer_data$coll_position <- mapply(as.character(puer_data$coll_position_old),  FUN = removing_right_minus_sign )
+
+# Aggregating by site, year and collector position
+# Total Puerulus per site, year and collector position
+puer_site_year_pos <- aggregate(n_puer ~ site + year + coll_position , data = puer_data, sum,na.rm=T)
+colnames(puer_site_year_pos)[4] <- "tot_puer_year"  
+puer_site_year_pos <- puer_site_year_pos[with(puer_site_year_pos, order(site, year, coll_position)), ] 
+
+# Total number of collectors
+collect_site_year_pos <- aggregate(n_puer ~ site + year + coll_position, data = puer_data, length)
+colnames(collect_site_year_pos)[4] <- "tot_collect_year"  
+puer_site_year_pos <- puer_site_year_pos[with(puer_site_year_pos, order(site, year, coll_position)), ] 
+puer_site_year_pos$tot_collect_year <- collect_site_year_pos$tot_collect_year
+puer_site_year_pos$puer_cpue <- puer_site_year_pos$tot_puer_year/collect_site_year_pos$tot_collect_year
+
+puer_data_subset <- puer_site_year_pos[c(1,2,3,6)]  
+
+# Adding grouping Order based on the order facing the sea to the beach
+puer_data_subset$Order <- NA
+puer_data_subset$Order <- with(puer_data_subset, ifelse(is.na(Order),
+                                                          ifelse(coll_position %in% c("A4", "1", "5", "9", "B4", "B3", "B2", "B1", "D1", "D2", "D3", "D4"), "1st", Order), Order))
+puer_data_subset$Order <- with(puer_data_subset, ifelse(is.na(Order),
+                                                          ifelse(coll_position %in% c("2", "6", "10"), "2nd", Order), Order))
+puer_data_subset$Order <- with(puer_data_subset, ifelse(is.na(Order),
+                                                          ifelse(coll_position %in% c("3", "7", "11"), "3rd", Order), Order))
+puer_data_subset$Order <- with(puer_data_subset, ifelse(is.na(Order),
+                                                          ifelse(coll_position %in% c("4", "8", "12"), "4th", Order), Order))
+
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_DEEP"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_DEEP", ], ifelse(is.na(Order),
+                                                                                                                                                     ifelse(coll_position %in% c("A3"), "1st", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_DEEP"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_DEEP", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("A2"), "2nd", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_DEEP"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_DEEP", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("A1"), "3rd", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_DEEP"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_DEEP", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("C1"), "4th", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_DEEP"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_DEEP", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("C2"), "5th", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_DEEP"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_DEEP", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("C3"), "6th", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_SHALLOW"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_SHALLOW", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("A3"), "1st", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_SHALLOW"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_SHALLOW", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("A2"), "2nd", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_SHALLOW"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_SHALLOW", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("A1"), "3rd", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_SHALLOW"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_SHALLOW", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("C1"), "4th", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_SHALLOW"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_SHALLOW", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("C2"), "5th", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "BICHENO_SHALLOW"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_SHALLOW", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("C3"), "6th", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "SOUTH_ARM"] <- with(puer_data_subset[puer_data_subset$site== "SOUTH_ARM", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("A3"), "2nd", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "SOUTH_ARM"] <- with(puer_data_subset[puer_data_subset$site== "SOUTH_ARM", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("A2"), "3rd", Order), Order))
+
+puer_data_subset$Order[puer_data_subset$site== "SOUTH_ARM"] <- with(puer_data_subset[puer_data_subset$site== "SOUTH_ARM", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("A1"), "4th", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "SOUTH_ARM"] <- with(puer_data_subset[puer_data_subset$site== "SOUTH_ARM", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("C1"), "5th", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "SOUTH_ARM"] <- with(puer_data_subset[puer_data_subset$site== "SOUTH_ARM", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("C2"), "6th", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "SOUTH_ARM"] <- with(puer_data_subset[puer_data_subset$site== "SOUTH_ARM", ], ifelse(is.na(Order),
+                                                                                                                                          ifelse(coll_position %in% c("C3"), "7th", Order), Order))
+puer_data_subset$Order[puer_data_subset$site== "SOUTH_ARM"] <- with(puer_data_subset[puer_data_subset$site== "SOUTH_ARM", ], ifelse(is.na(Order),
+                                                                                                                                      ifelse(coll_position %in% c("C4"), "8th", Order), Order))
+
+
+# Adding (this adding is grouping the arm, 1 which has one neighbor, 2 which has 2 neighbour, 3 which has 3 neighbour and so on)
+
+puer_data_subset$Neighbour <- NA
+puer_data_subset$Neighbour <- with(puer_data_subset, ifelse(is.na(Neighbour),
+                                                               ifelse(coll_position %in% c("A1", "B1", "C1", "D1"), 4, Neighbour), Neighbour))
+puer_data_subset$Neighbour <- with(puer_data_subset, ifelse(is.na(Neighbour),
+                                                               ifelse(coll_position %in% c("A2", "B2", "C2", "D2"), 2, Neighbour), Neighbour))
+puer_data_subset$Neighbour <- with(puer_data_subset, ifelse(is.na(Neighbour),
+                                                               ifelse(coll_position %in% c("A4", "B4", "C4", "D4"), 1, Neighbour), Neighbour))
+puer_data_subset$Neighbour <- with(puer_data_subset, ifelse(is.na(Neighbour),
+                                                               ifelse(coll_position %in% c("1",  "4", "9", "12"), 3, Neighbour), Neighbour))
+puer_data_subset$Neighbour <- with(puer_data_subset, ifelse(is.na(Neighbour),
+                                                               ifelse(coll_position %in% c("2", "3", "5", "8", "10", "11"), 5, Neighbour), Neighbour))
+puer_data_subset$Neighbour <- with(puer_data_subset, ifelse(is.na(Neighbour),
+                                                               ifelse(coll_position %in% c("6", "7"), 8, Neighbour), Neighbour))
+
+puer_data_subset$Neighbour[puer_data_subset$site== "BICHENO_DEEP"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_DEEP", ], ifelse(is.na(Neighbour),
+                                                                                                                                              ifelse(coll_position %in% c("A3", "B3", "C3", "D3"), 1, Neighbour), Neighbour))
+
+puer_data_subset$Neighbour[puer_data_subset$site== "BICHENO_SHALLOW"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_SHALLOW", ], ifelse(is.na(Neighbour),
+                                                                                                                                                  ifelse(coll_position %in% c("A3", "B3", "C3", "D3"), 1, Neighbour), Neighbour))
+
+puer_data_subset$Neighbour[puer_data_subset$site== "SOUTH_ARM"] <- with(puer_data_subset[puer_data_subset$site== "SOUTH_ARM", ], ifelse(is.na(Neighbour),
+                                                                                                                                        ifelse(coll_position %in% c("A3", "B3", "C3", "D3"), 2, Neighbour), Neighbour))              
+
+
+# Adding grouping fact 4 (edge) to group recherche bay the line based on the sea to beach 
+puer_data_subset$Edge <- NA
+puer_data_subset$Edge <- with(puer_data_subset, ifelse(is.na(Edge),
+                                                           ifelse(coll_position %in% c("1", "4", "9", "12"), "Edge", Edge), Edge))
+puer_data_subset$Edge <- with(puer_data_subset, ifelse(is.na(Edge),
+                                                           ifelse(coll_position %in% c("2", "3", "5", "6", "7", "8", "10", "11"), "Non Edge", Edge), Edge))
+puer_data_subset$Edge <- with(puer_data_subset, ifelse(is.na(Edge),
+                                                           ifelse(coll_position %in% c("A4", "B4", "C4", "D4"), "Edge", Edge), Edge))
+puer_data_subset$Edge <- with(puer_data_subset, ifelse(is.na(Edge),
+                                                           ifelse(coll_position %in% c("A1", "B1", "C1", "D1", "A2", "B2", "C2", "D2"), "Non Edge", Edge), Edge))
+puer_data_subset$Edge[puer_data_subset$site== "BICHENO_DEEP"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_DEEP", ], ifelse(is.na(Edge),
+                                                                                                                          ifelse(coll_position %in% c("A3", "B3", "C3", "D3"), "Edge" , Edge), Edge))
+                                                                                                                                        
+puer_data_subset$Edge[puer_data_subset$site== "BICHENO_SHALLOW"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_SHALLOW", ], ifelse(is.na(Edge),
+                                                                                                                          ifelse(coll_position %in% c("A3", "B3", "C3", "D3"), "Edge" , Edge), Edge))
+                                                                                                                                        
+puer_data_subset$Edge[puer_data_subset$site== "SOUTH_ARM"] <- with(puer_data_subset[puer_data_subset$site== "SOUTH_ARM", ], ifelse(is.na(Edge),
+                                                                                                                          ifelse(coll_position %in% c("A3", "B3", "C3", "D3"), "Non Edge", Edge), Edge))
+
+                                                                                                                                        
+# Adding grouping factor, inner, middle, outer
+puer_data_subset$Radial <- NA
+puer_data_subset$Radial <- with(puer_data_subset, ifelse(is.na(Radial),
+                                 ifelse(coll_position %in% c("6", "7", "A1", "B1", "C1", "D1"), "Inner", Radial), Radial))
+puer_data_subset$Radial <- with(puer_data_subset, ifelse(is.na(Radial),
+                                ifelse(coll_position %in% c("1", "2", "3", "4", "5", "8", "9", "10", "11", "12", "A4", "B4", "C4", "D4"), "Outter", Radial), Radial))
+                                                                                 
+puer_data_subset$Radial[puer_data_subset$site== "BICHENO_DEEP"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_DEEP", ], ifelse(is.na(Radial),
+                                                                                                                                         ifelse(coll_position %in% c("A3", "B3", "C3", "D3"), "Outter" , Radial), Radial))
+puer_data_subset$Radial[puer_data_subset$site== "BICHENO_DEEP"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_DEEP", ], ifelse(is.na(Radial),
+                                                                                                                                           ifelse(coll_position %in% c("A2", "B2", "C2", "D2"), "Middle" , Radial), Radial))
+
+puer_data_subset$Radial[puer_data_subset$site== "BICHENO_SHALLOW"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_SHALLOW", ], ifelse(is.na(Radial),
+                                                                                                                                      ifelse(coll_position %in% c("A3", "B3", "C3", "D3"), "Outter" , Radial), Radial))
+puer_data_subset$Radial[puer_data_subset$site== "BICHENO_SHALLOW"] <- with(puer_data_subset[puer_data_subset$site== "BICHENO_SHALLOW", ], ifelse(is.na(Radial),
+                                                                                                                                           ifelse(coll_position %in% c("A2", "B2", "C2", "D2"), "Middle" , Radial), Radial))
+puer_data_subset$Radial[puer_data_subset$site== "SOUTH_ARM"] <- with(puer_data_subset[puer_data_subset$site== "SOUTH_ARM", ], ifelse(is.na(Radial),
+                                                                                                                                   ifelse(coll_position %in% c("A3", "B3", "C3", "D3","A2", "B2", "C2", "D2"), "Middle", Radial), Radial))
+
+
+
+###~~DATA MODELLING~~###
+#~~~~~~~~~~~~~~~~~~~~~~#
+puer_data_subset_1 <- puer_data_subset
+puer_data_subset_1$site <- as.character(puer_data_subset_1$site)
+puer_data_subset_1$coll_position <- as.character(puer_data_subset_1$coll_position)
+puer_data_subset_1$year <- as.numeric(puer_data_subset_1$year)
+puer_data_subset_1$Order <- as.character(puer_data_subset_1$Order)
+puer_data_subset_1$Neighbour <- as.character(puer_data_subset_1$Neighbour)
+puer_data_subset_1$Edge <- as.character(puer_data_subset_1$Edge)
+puer_data_subset_1$Radial <- as.character(puer_data_subset_1$Radial)
+puer_data_subset_1$puer_cpue <- as.numeric(puer_data_subset_1$puer_cpue)
+#puer_data_subset_1<-puer_data_subset_1[-c(2,4,6,125,127,129,158,160,162),]
+puer_data_subset_2 <- puer_data_subset_1[puer_data_subset_1$site != 'SOUTH_ARM', ] 
+puer_data_subset_3 <- puer_data_subset_1[puer_data_subset_1$site == 'SOUTH_ARM',]
+puer_data_subset_3 <- puer_data_subset_3[puer_data_subset_3$coll_position != '1',]
+puer_data_subset_3 <- puer_data_subset_3[puer_data_subset_3$coll_position != '2',]
+puer_data_subset_3 <- puer_data_subset_3[puer_data_subset_3$coll_position != '3',]
+puer_data_subset_4 <- rbind(puer_data_subset_2, puer_data_subset_3)
+puer_data_subset_1 <- puer_data_subset_4
+#str(puer_data_subset_1)
+
+# Bicheno _deep
+#. Order
+varf <- varIdent(form = ~ year | coll_position) # to account high inter-annual variability
+corf <- corAR1(form = ~ year | coll_position, value = 0.03) # to account temporal autocorrelation
+
+mod_2 <- gls(puer_cpue ~ Order, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "BICHENO_DEEP",] ) # here you can change site
+summary(mod_2)
+
+contrast_object_2 <- emmeans(mod_2, "Order")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = ">", delta = 0, adjust = "none")  
+
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = " Order")
+
+#. Neighbour
+mod_3 <- gls(puer_cpue ~ Neighbour, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "BICHENO_DEEP",] ) # here you can change site
+summary(mod_3)
+
+contrast_object_2 <- emmeans(mod_3, "Neighbour")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = "<", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Neighbours")
+
+#. Edge
+mod_4 <- gls(puer_cpue ~ Edge, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "BICHENO_DEEP",] ) # here you can change site
+summary(mod_4)
+
+contrast_object_2 <- emmeans(mod_4, "Edge")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = ">", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Edge")
+
+#. Radial
+mod_5 <- gls(puer_cpue ~ Radial, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "BICHENO_DEEP",] ) # here you can change site
+summary(mod_5)
+
+contrast_object_2 <- emmeans(mod_5, "Radial")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = "<", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Radial")
+
+# question number1 Bicheno _shallow
+#. Order
+varf <- varIdent(form = ~ year | coll_position) # to account high inter-annual variability
+corf <- corAR1(form = ~ year | coll_position, value = 0.03) # to account temporal autocorrelation
+
+mod_2 <- gls(puer_cpue ~ Order, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "BICHENO_SHALLOW",] ) # here you can change site
+summary(mod_2)
+
+contrast_object_2 <- emmeans(mod_2, "Order")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = ">", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Order")
+
+#. Neighbour
+mod_3 <- gls(puer_cpue ~ Neighbour, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "BICHENO_SHALLOW",] ) # here you can change site
+summary(mod_3)
+
+contrast_object_2 <- emmeans(mod_3, "Neighbour")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = "<", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Neighbours")
+
+#. Edge
+mod_4 <- gls(puer_cpue ~ Edge, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "BICHENO_SHALLOW",] ) # here you can change site
+summary(mod_4)
+
+contrast_object_2 <- emmeans(mod_4, "Edge")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = ">", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Edge")
+
+#. Radial
+mod_5 <- gls(puer_cpue ~ Radial, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "BICHENO_SHALLOW",] ) # here you can change site
+summary(mod_5)
+
+contrast_object_2 <- emmeans(mod_5, "Radial")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = "<", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Radial")
+
+# question number1 South_arm
+#. Order
+varf <- varIdent(form = ~ year | coll_position) # to account high inter-annual variability
+corf <- corAR1(form = ~ year | coll_position, value = 0.03) # to account temporal autocorrelation
+
+mod_2 <- gls(puer_cpue ~ Order, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "SOUTH_ARM",] ) # here you can change site
+summary(mod_2)
+
+contrast_object_2 <- emmeans(mod_2, "Order")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = ">", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Order")
+
+#. Neighbour
+mod_3 <- gls(puer_cpue ~ Neighbour, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "SOUTH_ARM",] ) # here you can change site
+summary(mod_3)
+
+contrast_object_2 <- emmeans(mod_3, "Neighbour")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = "<", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Neighbours")
+
+#. Edge
+mod_4 <- gls(puer_cpue ~ Edge, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "SOUTH_ARM",] ) # here you can change site
+summary(mod_4)
+
+contrast_object_2 <- emmeans(mod_4, "Edge")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = ">", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Edge")
+
+#. Radial
+mod_5 <- gls(puer_cpue ~ Radial, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "SOUTH_ARM",] ) # here you can change site
+summary(mod_5)
+
+contrast_object_2 <- emmeans(mod_5, "Radial")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = "<", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Radial")
+
+# question number1 Recherche
+#. Order
+varf <- varIdent(form = ~ year | coll_position) # to account high inter-annual variability
+corf <- corAR1(form = ~ year | coll_position, value = 0.03) # to account temporal autocorrelation
+
+mod_2 <- gls(puer_cpue ~ Order, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "RECHERCHE",] ) # here you can change site
+summary(mod_2)
+
+contrast_object_2 <- emmeans(mod_2, "Order")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = ">", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Order")
+
+#. Neighbour
+mod_3 <- gls(puer_cpue ~ Neighbour, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "RECHERCHE",] ) # here you can change site
+summary(mod_3)
+
+contrast_object_2 <- emmeans(mod_3, "Neighbour")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = "<", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Naighbour")
+
+#. Edge
+mod_4 <- gls(puer_cpue ~ Edge, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "RECHERCHE",] ) # here you can change site
+summary(mod_4)
+
+contrast_object_2 <- emmeans(mod_4, "Edge")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = ">", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = "Edge")
+
+#. Radial
+varf <- varIdent(form = ~ year | coll_position) # to account high inter-annual variability
+corf <- corAR1(form = ~ year | coll_position, value = 0.03) # to account temporal autocorrelation
+
+mod_5 <- gls(puer_cpue ~ Radial, correlation = corf, weights = varf, 
+             data = puer_data_subset_1[puer_data_subset_1$site == "RECHERCHE",] ) # here you can change site
+summary(mod_5)
+
+contrast_object_2 <- emmeans(mod_5, "Radial")
+pwpm(contrast_object_2, means = FALSE,
+     reverse = F,                            
+     side = "<", delta = 0, adjust = "none")  
+plot(contrast_object_2, comparisons = TRUE, 
+     xlab = "Mean puerulus index",
+     ylab = " Collectors' position")
+
+
+###~~DATA VISUALIZATION~~###
+#~~~~~~~~~~~~~~~~~~~~~~#
+
+# Adding grouping Order based on the order facing the sea to the beach
+
+df_order<- puer_data_subset_1 %>%
+  group_by(site, Order) %>%
+  summarize(Meancpue = mean(puer_cpue, na.rm = TRUE))
+
+df_neighbour<- puer_data_subset %>%
+  group_by(site, Neighbour) %>%
+  summarize(Meancpue = mean(puer_cpue, na.rm = TRUE))
+
+df_edge<- puer_data_subset %>%
+  group_by(site, Edge) %>%
+  summarize(Meancpue = mean(puer_cpue, na.rm = TRUE))
+
+df_radial<- puer_data_subset %>%
+  group_by(site, Radial) %>%
+  summarize(Meancpue = mean(puer_cpue, na.rm = TRUE))
+
+#data visualization 
+#str(puer_data_subset_1$puer_cpue)
+puer_data_subset_1$puer_cpue <- as.numeric(puer_data_subset_1$puer_cpue)
+puer_data_subset_1$Neighbour <- as.numeric(puer_data_subset_1$Neighbour)
+
+p_all <- ggplot(data = puer_data_subset_1, aes(Order, puer_cpue, fill=Order)) +
+  geom_boxplot(outlier.shape = NA) +
+  labs(title = "Sites based on the Order of collector location from offshore to inshore",
+       subtitle = "(.......)",
+       y = "Average catch", x = "") +
+  coord_flip()+
+  #facet_wrap(~ site)
+
+x11()
+p_all
+
+p_all1 <- ggplot(data = puer_data_subset_1, aes(Neighbour, puer_cpue, fill=Neighbour)) +
+  geom_boxplot(outlier.shape = NA) +
+  labs(title = "Based on the number of Neighbour",
+       subtitle = "(.......)",
+       y = "Average catch", x = "") +
+  coord_flip()+
+x11()
+p_all1
+
+
+p_all2 <- ggplot(data = puer_data_subset_1, aes(Edge, puer_cpue, fill=Edge)) +
+  geom_boxplot(outlier.shape = NA) +
+  labs(title = "Based on the Edge",
+       subtitle = "(.......)",
+       y = "Average catch", x = "") +
+  coord_flip()+
+  x11()
+p_all2
+
+p_all3 <- ggplot(data = puer_data_subset_1, aes(Radial, puer_cpue, fill=Radial)) +
+  geom_boxplot(outlier.shape = NA) +
+  labs(title = "Based on the Radial placement",
+       subtitle = "(.......)",
+       y = "Average catch", x = "") +
+  coord_flip()+
+  x11()
+p_all3
+
+#point
+p_order <- ggplot(df_order, aes(Order, site))+ 
+  geom_point(aes(size = Meancpue , fill = site),color='black',alpha = 0.5)+
+  scale_radius(limits = c(0, NA), range = c(0, 8))+
+  theme_classic()+
+  theme(legend.position = "none")+
+  labs(x = "Dirrectional Effect ", y="Site  ")+
+  scale_y_discrete(labels=c("BICHENO_DEEP" = "Bicheno Deep", "BICHENO_SHALLOW" = "Bicheno Shallow", "RECHERCHE"  = "Recherche",
+                             "SOUTH_ARM" = "South Arm"))
+x11()
+p_order
+ 
+p_neighbour <- ggplot(df_neighbour, aes(Neighbour, site))+ 
+  geom_point(aes(size = Meancpue), colour = 'black',alpha = 0.5)+
+  scale_radius(limits = c(0, NA), range = c(0, 8))+
+  theme_classic()+
+  theme(legend.position = "none")+
+  theme(axis.text.y=element_blank())+
+  labs(x = "Number of Neighbour ", y=" ")
+x11()
+p_neighbour
+
+p_radial <- ggplot(df_radial, aes(Radial, site))+ 
+  geom_point(aes(size = Meancpue), colour = 'black', alpha = 0.5)+
+  scale_radius(limits = c(0, NA), range = c(0, 8))+
+  theme_classic()+
+  theme(legend.position = "none")+
+  theme(axis.text.y=element_blank())+
+  labs(x = "Radial Effect ", y="")
+x11()
+p_radial
+
+p_edge <- ggplot(df_edge, aes(Edge, site ))+
+  geom_point(aes(size = Meancpue), colour = 'black',alpha = 0.5)+
+  labs(size="Mean Catch")+
+  scale_radius(limits = c(0, NA), range = c(0, 8))+
+  theme_classic()+
+  theme(axis.text.y=element_blank())+
+  labs(x = "Edge Effect", y="", )
+ x11()
+p_edge
+ 
+#adding table 
+#install.packages("formattable")
+library(formattable)
+#f <- data.frame(
+# site=c('SOUTH ARM', 'RECHERCHE', 'BICHENO SHALLOW', 'BICHENO DEEP'),
+ #P-value =c(''
+  
+#combining the plots
+library(patchwork)
+x11()
+pall <-p_order + p_neighbour + p_radial + p_edge+  plot_layout(nrow= 1)
+
+ggsave("pall.png", plot = pall, width = 11, height = 3, dpi = 600)
+
+#< another option to make the raster chart
+
+puer_data$Neighbour <- as.factor(puer_data$Neighbour)
+puer_data$month <- as.factor(puer_data$month)
+#>explainning which month has the highest catch with base data
+ggplot(puer_data, aes(n_puer)) + 
+  geom_bar(aes(fill = month),position = "fill")+
+  xlim(0, 26)
+ggplot(puer_data, aes(n_puer)) + 
+  geom_histogram(aes(fill = month), binwidth = 1.5,
+                 na.rm = TRUE)+
+  facet_wrap(~month, ncol=5)+
+  xlim(1,50)+
+  ylim(0,210)
+
+ggplot(puer_data, aes(n_puer)) + 
+  geom_freqpoly(aes(colour = coll_position), binwidth = 1,na.rm = TRUE) +
+  xlim(1, 68) + 
+  theme(legend.position = "none")
+
+ggplot(puer_data, aes(n_puer)) + 
+  geom_histogram(aes(fill = coll_position), binwidth =2.5,position = "fill",
+                 na.rm = TRUE) +
+  xlim(1, 68)#+ 
+ #theme(legend.position = "none")
+
+#>explainning which month has the highest catch with cpue data
+#>Order, Neighbour, Edge
+ggplot(puer_data_subset_1, aes(puer_cpue))+
+  geom_bar(aes(fill = Order),position = "fill", binwidth =1)+
+  xlim(0,14)
+
+ggplot(puer_data_subset_1, aes(puer_cpue)) + 
+  geom_histogram(aes(fill = Order), binwidth = 1,position = "fill",  na.rm = TRUE) +
+  xlim(1, 15)
+
+ggplot(puer_data_subset_1, aes(puer_cpue, fill = Order, colour = Order)) +
+  geom_density(alpha = 0.2,na.rm = TRUE) + 
+  xlim(1, 27)+
+  facet_wrap(~Order, ncol=4)
+
+puer_data_subset_1$Neighbour <- as.factor(puer_data_subset_1$Neighbour)
+
+ggplot(puer_data_subset_1, aes(puer_cpue))+
+  geom_bar(aes(fill = Neighbour),position = "fill", binwidth =1)+
+  xlim(0,14)
+
+ggplot(puer_data_subset_1, aes(puer_cpue)) + 
+  geom_histogram(aes(fill = Neighbour), binwidth =0.5,position = "fill",  na.rm = TRUE) +
+  xlim(0,20)
+
+ggplot(puer_data_subset_1, aes(puer_cpue, fill = Neighbour, colour = Neighbour)) +
+  geom_density(alpha = 0.2,na.rm = TRUE) + 
+  xlim(0,20)+
+  facet_wrap(~Neighbour, ncol=4)
+
+ggplot(puer_data_subset_1, aes(puer_cpue))+
+  geom_bar(aes(fill = Edge),position = "fill", binwidth =1)+
+  xlim(0,14)
+
+ggplot(puer_data_subset_1, aes(puer_cpue)) + 
+  geom_histogram(aes(fill = Edge), binwidth =0.5,position = "fill",  na.rm = TRUE) +
+  xlim(0,20)
+
+ggplot(puer_data_subset_1, aes(puer_cpue, fill = Edge, colour = Edge)) +
+  geom_density(alpha = 0.2,na.rm = TRUE) + 
+  xlim(0,20)+
+  facet_wrap(~Order, ncol=4)
